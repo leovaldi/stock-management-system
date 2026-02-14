@@ -1,3 +1,19 @@
-*.csv
-data/
-.ipynb_checkpoints/
+# Ignorar archivos pesados de datos
+data/DatosProcesados/*
+data/DatosIngesta/*
+data/*
+
+# Pero permitir que Git vea las carpetas (si quieres mantener la estructura)
+!data/DatosProcesados/.gitkeep
+!data/DatosIngesta/.gitkeep
+!data/.gitkeep
+
+# Ignorar archivos temporales de Python y entornos
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Ignorar archivos de configuración de sistema
+.DS_Store
+Thumbs.db
