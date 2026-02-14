@@ -1,4 +1,4 @@
-¿
+
 ---
 
 # Sistema de Gestión de Inventario - Bloque 1
