@@ -1,12 +1,9 @@
-# Ignorar archivos pesados de datos
-data/DatosProcesados/*
-data/DatosIngesta/*
-data/*
+# Ignorar todo dentro de data/
+data/**
 
-# Pero permitir que Git vea las carpetas (si quieres mantener la estructura)
-!data/DatosProcesados/.gitkeep
-!data/DatosIngesta/.gitkeep
+# Permitir las carpetas y archivos .gitkeep
 !data/.gitkeep
+!data/**/.gitkeep
 
 # Ignorar archivos temporales de Python y entornos
 __pycache__/
@@ -14,6 +11,6 @@ __pycache__/
 .venv/
 .env
 
-# Ignorar archivos de configuración de sistema
+# Ignorar archivos de configuración del sistema
 .DS_Store
 Thumbs.db
