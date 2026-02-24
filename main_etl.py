@@ -8,35 +8,51 @@ from google.cloud import bigquery
 from kaggle.api.kaggle_api_extended import KaggleApi
 
 # CONFIGURACIÓN
-PROJECT_ID = "henry-inventory-analytics"  # <--- CAMBIA ESTO POR TU ID DE GOOGLE
+PROJECT_ID = "henry-inventory-analytics"
 DATASET_ID = "Inventario_DWH"
+# Slug actualizado con el enlace correcto
+DATASET_SLUG = "bhanupratapbiswas/inventory-analysis-case-study"
 
 def obtener_cliente_bq():
     """Configura la conexión a BigQuery usando la llave local o el secreto de GitHub."""
     if os.path.exists("google_key.json"):
         return bigquery.Client.from_service_account_json("google_key.json")
     else:
-        # Para GitHub Actions
         info = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
         creds = service_account.Credentials.from_service_account_info(info)
         return bigquery.Client(credentials=creds, project=PROJECT_ID)
 
+def descargar_datos():
+    """Descarga y descomprime los archivos desde Kaggle."""
+    print("Descargando archivos desde Kaggle...")
+    api = KaggleApi()
+    api.authenticate()
+    
+    if not os.path.exists('data'):
+        os.makedirs('data')
+    
+    api.dataset_download_files(DATASET_SLUG, path='data/', unzip=True)
+    print("Descarga y descompresion completada.")
+
 def limpiar_packs(valor):
-    """Tu lógica de Regex para calcular unidades reales."""
+    """Calcula unidades reales mediante expresiones regulares."""
     res = re.findall(r'(\d+)\s*Pk', str(valor))
     return int(res[0]) if res else 1
 
 def procesar_etl():
+    # 1. Obtencion de datos
+    descargar_datos()
+    
     client = obtener_cliente_bq()
     print("Iniciando proceso ETL...")
 
-    # 1. CARGA DE DATOS (Asumiendo que los CSV están en carpeta 'data')
+    # 2. Carga de archivos descargados
     ventas_raw = pd.read_csv('data/SalesFINAL12312016.csv')
     compras_raw = pd.read_csv('data/PurchasesFINAL12312016.csv')
     inv_ini_raw = pd.read_csv('data/BegInvFinal12312016.csv')
     inv_fin_raw = pd.read_csv('data/EndInvFinal12312016.csv')
 
-    # --- TRANSFORMACIÓN: CATALOGO (Dimensiones) ---
+    # --- TRANSFORMACIÓN: CATALOGO ---
     
     # Dim_Producto
     print("Creando Dim_Producto...")
@@ -54,7 +70,7 @@ def procesar_etl():
     dim_proveedor = compras_raw[['VendorNumber', 'VendorName']].drop_duplicates()
     dim_proveedor.columns = ['Proveedor_ID', 'Nombre_Proveedor']
 
-    # --- TRANSFORMACIÓN: OPERACIONES (Hechos) ---
+    # --- TRANSFORMACIÓN: OPERACIONES ---
 
     # Fact_Ventas
     print("Creando Fact_Ventas...")
