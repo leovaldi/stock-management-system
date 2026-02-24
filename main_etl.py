@@ -18,7 +18,6 @@ def obtener_cliente_bq():
     if os.path.exists("google_key.json"):
         return bigquery.Client.from_service_account_json("google_key.json")
     else:
-        # Recupera las credenciales desde los Secrets de GitHub
         info = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
         creds = service_account.Credentials.from_service_account_info(info)
         return bigquery.Client(credentials=creds, project=PROJECT_ID)
@@ -42,12 +41,11 @@ def procesar_etl():
     # 1. Obtencion de datos
     descargar_datos()
     
-    # Preparamos el cliente y extraemos las credenciales para pandas-gbq
     client = obtener_cliente_bq()
     credentials = client._credentials
     print("Iniciando proceso ETL...")
 
-    # 2. Carga dinamica de archivos (Uso de glob para evitar FileNotFoundError)
+    # 2. Carga dinamica de archivos
     try:
         ventas_path = glob.glob('data/SalesFINAL*.csv')[0]
         compras_path = glob.glob('data/PurchasesFINAL*.csv')[0]
@@ -59,10 +57,9 @@ def procesar_etl():
         inv_ini_raw = pd.read_csv(inv_ini_path)
         inv_fin_raw = pd.read_csv(inv_fin_path)
         
-        print(f"Archivos identificados y cargados exitosamente.")
+        print("Archivos identificados y cargados exitosamente.")
     except IndexError:
         print("Error: No se encontraron los archivos CSV en la carpeta data.")
-        print("Contenido de la carpeta data:", os.listdir('data'))
         raise
 
     # --- TRANSFORMACIÓN: CATALOGO ---
@@ -74,9 +71,11 @@ def procesar_etl():
     dim_producto['Clasificacion'] = 1.0
     dim_producto['Pack'] = "Individual"
 
+    print("Creando Dim_Tienda...")
     dim_tienda = inv_ini_raw[['Store', 'City']].drop_duplicates()
     dim_tienda.columns = ['Tienda_ID', 'Ciudad']
 
+    print("Creando Dim_Proveedor...")
     dim_proveedor = compras_raw[['VendorNumber', 'VendorName']].drop_duplicates()
     dim_proveedor.columns = ['Proveedor_ID', 'Nombre_Proveedor']
 
@@ -84,20 +83,25 @@ def procesar_etl():
 
     print("Creando Fact_Ventas...")
     fact_ventas = ventas_raw.copy()
-    fact_ventas['Fecha_Venta'] = pd.to_datetime(fact_ventas['SalesDate'])
+    fact_ventas['Venta_ID'] = fact_ventas.index + 1
+    fact_ventas['Fecha_ID'] = pd.to_datetime(fact_ventas['SalesDate']).dt.strftime('%Y%m%d').astype(int)
     fact_ventas['Cantidad'] = fact_ventas['SalesQuantity']
     fact_ventas['Venta_Total'] = fact_ventas['SalesDollars']
     fact_ventas['Precio_Unitario'] = fact_ventas['SalesPrice']
     fact_ventas['Impuesto'] = fact_ventas['ExciseTax']
-    fact_ventas = fact_ventas[['InventoryId', 'Brand', 'Store', 'Fecha_Venta', 'Cantidad', 'Venta_Total', 'Precio_Unitario', 'Impuesto']]
-    fact_ventas.rename(columns={'Brand': 'Marca_ID', 'Store': 'Tienda_ID'}, inplace=True)
+    
+    fact_ventas = fact_ventas[['Venta_ID', 'InventoryId', 'Brand', 'Store', 'Fecha_ID', 'Cantidad', 'Venta_Total', 'Precio_Unitario', 'Impuesto']]
+    fact_ventas.columns = ['Venta_ID', 'Inventario_ID', 'Marca_ID', 'Tienda_ID', 'Fecha_ID', 'Cantidad', 'Venta_Total', 'Precio_Unitario', 'Impuesto']
 
     print("Creando Fact_Compras...")
     fact_compras = compras_raw.copy()
+    fact_compras['Detalle_Compra_ID'] = fact_compras.index + 1
     fact_compras['Fecha_ID'] = pd.to_datetime(fact_compras['PODate']).dt.strftime('%Y%m%d').astype(int)
-    fact_compras = fact_compras[['PurchasePrice', 'Quantity', 'Dollars', 'VendorNumber', 'Brand', 'PONumber']]
-    fact_compras.columns = ['Precio_Compra', 'Cantidad', 'Importe', 'Proveedor_ID', 'Marca_ID', 'Compra_ID']
+    
+    fact_compras = fact_compras[['Detalle_Compra_ID', 'PONumber', 'VendorNumber', 'Brand', 'Fecha_ID', 'PurchasePrice', 'Quantity', 'Dollars']]
+    fact_compras.columns = ['Detalle_Compra_ID', 'Compra_ID', 'Proveedor_ID', 'Marca_ID', 'Fecha_ID', 'Precio_Compra', 'Cantidad', 'Importe']
 
+    print("Creando Fact_Inventarios...")
     fact_inv_ini = inv_ini_raw[['InventoryId', 'Brand', 'Store', 'onHand']].copy()
     fact_inv_ini.columns = ['Inventario_ID', 'Marca_ID', 'Tienda_ID', 'Unidades_Disponibles']
     
@@ -117,7 +121,6 @@ def procesar_etl():
 
     for nombre, df in tablas.items():
         print(f"Subiendo {nombre} a BigQuery...")
-        # Se pasan las credenciales explicitamente para evitar el error de navegador en la nube
         df.to_gbq(
             f"{DATASET_ID}.{nombre}", 
             project_id=PROJECT_ID, 
