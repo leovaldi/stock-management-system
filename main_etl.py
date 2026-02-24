@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import os
 import re
+import json
+from google.oauth2 import service_account
 from google.cloud import bigquery
 from kaggle.api.kaggle_api_extended import KaggleApi
 
