@@ -1,3 +1,8 @@
+# Seguridad: Credenciales y Claves
+google_key.json
+kaggle.json
+.kaggle/
+
 # Ignorar todo dentro de data/
 data/**
 
