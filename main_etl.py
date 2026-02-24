@@ -18,6 +18,7 @@ def obtener_cliente_bq():
     if os.path.exists("google_key.json"):
         return bigquery.Client.from_service_account_json("google_key.json")
     else:
+        # Recupera las credenciales desde los Secrets de GitHub
         info = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
         creds = service_account.Credentials.from_service_account_info(info)
         return bigquery.Client(credentials=creds, project=PROJECT_ID)
@@ -41,7 +42,9 @@ def procesar_etl():
     # 1. Obtencion de datos
     descargar_datos()
     
+    # Preparamos el cliente y extraemos las credenciales para pandas-gbq
     client = obtener_cliente_bq()
+    credentials = client._credentials
     print("Iniciando proceso ETL...")
 
     # 2. Carga dinamica de archivos (Uso de glob para evitar FileNotFoundError)
@@ -114,7 +117,13 @@ def procesar_etl():
 
     for nombre, df in tablas.items():
         print(f"Subiendo {nombre} a BigQuery...")
-        df.to_gbq(f"{DATASET_ID}.{nombre}", project_id=PROJECT_ID, if_exists='replace')
+        # Se pasan las credenciales explicitamente para evitar el error de navegador en la nube
+        df.to_gbq(
+            f"{DATASET_ID}.{nombre}", 
+            project_id=PROJECT_ID, 
+            if_exists='replace',
+            credentials=credentials
+        )
 
     print("ETL Finalizado con éxito.")
 
