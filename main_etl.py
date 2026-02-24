@@ -3,6 +3,7 @@ import numpy as np
 import os
 import re
 import json
+import glob
 from google.oauth2 import service_account
 from google.cloud import bigquery
 from kaggle.api.kaggle_api_extended import KaggleApi
@@ -10,7 +11,6 @@ from kaggle.api.kaggle_api_extended import KaggleApi
 # CONFIGURACIÓN
 PROJECT_ID = "henry-inventory-analytics"
 DATASET_ID = "Inventario_DWH"
-# Slug actualizado con el enlace correcto
 DATASET_SLUG = "bhanupratapbiswas/inventory-analysis-case-study"
 
 def obtener_cliente_bq():
@@ -27,10 +27,8 @@ def descargar_datos():
     print("Descargando archivos desde Kaggle...")
     api = KaggleApi()
     api.authenticate()
-    
     if not os.path.exists('data'):
         os.makedirs('data')
-    
     api.dataset_download_files(DATASET_SLUG, path='data/', unzip=True)
     print("Descarga y descompresion completada.")
 
@@ -46,15 +44,26 @@ def procesar_etl():
     client = obtener_cliente_bq()
     print("Iniciando proceso ETL...")
 
-    # 2. Carga de archivos descargados
-    ventas_raw = pd.read_csv('data/SalesFINAL12312016.csv')
-    compras_raw = pd.read_csv('data/PurchasesFINAL12312016.csv')
-    inv_ini_raw = pd.read_csv('data/BegInvFinal12312016.csv')
-    inv_fin_raw = pd.read_csv('data/EndInvFinal12312016.csv')
+    # 2. Carga dinamica de archivos (Uso de glob para evitar FileNotFoundError)
+    try:
+        ventas_path = glob.glob('data/SalesFINAL*.csv')[0]
+        compras_path = glob.glob('data/PurchasesFINAL*.csv')[0]
+        inv_ini_path = glob.glob('data/BegInv*.csv')[0]
+        inv_fin_path = glob.glob('data/EndInv*.csv')[0]
+        
+        ventas_raw = pd.read_csv(ventas_path)
+        compras_raw = pd.read_csv(compras_path)
+        inv_ini_raw = pd.read_csv(inv_ini_path)
+        inv_fin_raw = pd.read_csv(inv_fin_path)
+        
+        print(f"Archivos identificados y cargados exitosamente.")
+    except IndexError:
+        print("Error: No se encontraron los archivos CSV en la carpeta data.")
+        print("Contenido de la carpeta data:", os.listdir('data'))
+        raise
 
     # --- TRANSFORMACIÓN: CATALOGO ---
     
-    # Dim_Producto
     print("Creando Dim_Producto...")
     dim_producto = inv_ini_raw[['Brand', 'Description', 'Size', 'Price']].drop_duplicates()
     dim_producto.columns = ['Marca_ID', 'Descripcion', 'Tamano', 'Precio_Base']
@@ -62,17 +71,14 @@ def procesar_etl():
     dim_producto['Clasificacion'] = 1.0
     dim_producto['Pack'] = "Individual"
 
-    # Dim_Tienda
     dim_tienda = inv_ini_raw[['Store', 'City']].drop_duplicates()
     dim_tienda.columns = ['Tienda_ID', 'Ciudad']
 
-    # Dim_Proveedor
     dim_proveedor = compras_raw[['VendorNumber', 'VendorName']].drop_duplicates()
     dim_proveedor.columns = ['Proveedor_ID', 'Nombre_Proveedor']
 
     # --- TRANSFORMACIÓN: OPERACIONES ---
 
-    # Fact_Ventas
     print("Creando Fact_Ventas...")
     fact_ventas = ventas_raw.copy()
     fact_ventas['Fecha_Venta'] = pd.to_datetime(fact_ventas['SalesDate'])
@@ -83,14 +89,12 @@ def procesar_etl():
     fact_ventas = fact_ventas[['InventoryId', 'Brand', 'Store', 'Fecha_Venta', 'Cantidad', 'Venta_Total', 'Precio_Unitario', 'Impuesto']]
     fact_ventas.rename(columns={'Brand': 'Marca_ID', 'Store': 'Tienda_ID'}, inplace=True)
 
-    # Fact_Compras
     print("Creando Fact_Compras...")
     fact_compras = compras_raw.copy()
     fact_compras['Fecha_ID'] = pd.to_datetime(fact_compras['PODate']).dt.strftime('%Y%m%d').astype(int)
     fact_compras = fact_compras[['PurchasePrice', 'Quantity', 'Dollars', 'VendorNumber', 'Brand', 'PONumber']]
     fact_compras.columns = ['Precio_Compra', 'Cantidad', 'Importe', 'Proveedor_ID', 'Marca_ID', 'Compra_ID']
 
-    # Fact_Inventarios
     fact_inv_ini = inv_ini_raw[['InventoryId', 'Brand', 'Store', 'onHand']].copy()
     fact_inv_ini.columns = ['Inventario_ID', 'Marca_ID', 'Tienda_ID', 'Unidades_Disponibles']
     
