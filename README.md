@@ -1,83 +1,66 @@
+# Sistema de Gestión de Inventario (ETL Pipeline Automatizado en la Nube)
+
+Este repositorio contiene la arquitectura completa para la extracción, transformación y carga (ETL) de un sistema de inventarios, optimizado para procesar transacciones masivas directamente desde Kaggle hacia Google BigQuery.
 
 ---
 
-# Sistema de Gestión de Inventario - Bloque 1
+## 1. Arquitectura y Flujo de Trabajo (Pipeline)
 
-Este repositorio contiene la infraestructura necesaria para crear, limpiar e ingestar la base de datos de inventario. El flujo de trabajo está diseñado para ser reproducible mediante scripts de SQL y Python.
+El proyecto utiliza un orquestador maestro en Python (`main_etl.py`) que gobierna el proceso completo en 3 etapas sin intervención humana:
 
-## 1. Requisitos Previos
+1. **Extracción Automática (Kaggle API):** 
+   Se conecta al dataset en la nube y descarga los más de 3 millones de registros crudos en formato CSV directamente en la carpeta `/data/`.
+2. **Transformación (Jupyter Notebooks Limpios):**
+   Utilizando subprocesos en Background (`nbconvert`), el Orquestador ejecuta secuencialmente 6 Notebooks especializados que viven en la carpeta `/scripts/`.
+   - Limpian caracteres nulos e inyectan valores "Sin Especificar".
+   - Convierten medidas de empaques (Packs x Cantidad) en unidades reales.
+   - Corrigen incongruencias generadas por la fuente original.
+   - Pumblican los resultados "perfectos" como un Modelo Estrella en `/data/DatosIngesta/`.
+3. **Carga en la Nube (Google BigQuery):**
+   El Orquestador lee el bloque Maestro, mapea todas las llaves (Foreign Keys) para asegurar que no se suban filas huérfanas o truncadas, *Auto-Genera las Fechas que pudiesen faltar en la dimensión calendario* (salvando el historial de inventarios) y sube 9 tablas mediante `pandas-gbq` directo a tu Instancia de BigQuery lista para **Power BI**.
+
+---
+
+## 2. Requisitos Previos
 
 Antes de comenzar, asegúrate de tener instalado:
-
-* **SQL Server** (se recomienda la versión Express).
-* **SQL Server Management Studio (SSMS)**.
 * **Python 3.x**.
+* Una cuenta de Kaggle configurada (`kaggle.json` en `~/.kaggle/`).
+* Tu archivo de Google Cloud Credentials llamado **`google_key.json`** alojado en la raíz de este proyecto (no subas este archivo a GitHub por seguridad; ya está ignorado en `.gitignore`).
 
-### Librerías de Python necesarias
+---
 
-Para que el script de automatización funcione, debes instalar las siguientes librerías ejecutando este comando en tu terminal:
+## 3. ¿Cómo Ejecutarlo?
+
+Solamente necesitas correr un único comando en tu terminal para desatar la automatización:
 
 ```bash
-pip install pandas sqlalchemy pyodbc
-
+python main_etl.py
 ```
 
-* **Pandas**: Para la manipulación y limpieza de los datos.
-* **SQLAlchemy**: Para la gestión de la conexión a la base de datos.
-* **PyODBC**: Para permitir que Python se comunique con SQL Server.
+### ¿Qué hará por ti?
+1. Detectará si te falta alguna librería como Pandas, Google Cloud, PyArrow o Jupyter, y la **auto-instalará silenciósamente** de acuerdo al `requirements.txt`.
+2. Descargará los datos y ejecutará los notebooks.
+3. Subirá casi **4 millones de registros limpios** agrupados en Hechos (Fact) y Dimensiones (Dim) a la Base de Datos.
 
 ---
 
-## 2. Paso a Paso para la Configuración
+## 4. Estructura del Data Warehouse (BigQuery/SQL Server)
 
-Sigue este orden estricto para garantizar la integridad de los datos:
+Los datos cargan respondiendo a un modelo estrella tradicional configurado en los Scripts de creación de Bases de Datos (`sql/creacion_tablas.sql`):
 
-### Paso 1: Creación de la Estructura en SQL
+**Catálogo (Dimensiones):**
+- `Catalogo.Dim_Calendario`: 387 filas.
+- `Catalogo.Dim_Proveedor`: 126 filas.
+- `Catalogo.Dim_Tienda`: 80 filas.
+- `Catalogo.Dim_Producto`: 12,260 filas.
 
-1. Abre **SQL Server Management Studio (SSMS)**.
-2. Abre y ejecuta el archivo `scripts/creacion_tablas.sql`.
-* *Este script borrará cualquier versión previa, creará la base de datos `Inventario_DWH` y definirá los esquemas y tablas con sus respectivas llaves primarias y foráneas.*
+**Operaciones (Hechos):**
+- `Operaciones.Fact_Compras`: 5,543 filas.
+- `Operaciones.Fact_Inventario_Inicial`: 206,529 filas.
+- `Operaciones.Fact_Inventario_Final`: 224,489 filas.
+- `Operaciones.Fact_Ventas`: ~1,048,575 filas.
+- `Operaciones.Fact_Detalle_Compras`: ~2,372,471 filas.
 
-
-
-### Paso 2: Preparación de los Datos
-
-1. Asegúrate de que los archivos CSV resultantes de la limpieza (los que están en la carpeta `data/DatosIngesta/`) estén presentes en tu directorio local.
-
-### Paso 3: Ejecución de la Automatización (Ingesta)
-
-1. Abre el archivo `scripts/automatizacion_ingesta.py`.
-2. Busca la sección `CONFIG_SQL` y asegúrate de que el nombre del servidor coincida con el tuyo (normalmente es `localhost\SQLEXPRESS`).
-3. Ejecuta el script:
-```bash
-python scripts/automatizacion_ingesta.py
-
-```
-
-
-4. El script validará automáticamente que los productos y fechas existan antes de insertarlos, protegiendo la integridad de la base de datos.
-
----
-
-## 3. Verificación de la Base de Datos
-
-Una vez finalizado el proceso, puedes verificar que los datos se cargaron correctamente ejecutando esta consulta en SSMS:
-
-```sql
-USE Inventario_DWH;
-SELECT 
-    (SELECT COUNT(*) FROM Catalogo.Dim_Producto) AS Total_Productos,
-    (SELECT COUNT(*) FROM Operaciones.Fact_Ventas) AS Total_Ventas,
-    (SELECT COUNT(*) FROM Operaciones.Fact_Inventario_Final) AS Total_Inventario_Final;
-
-```
-
----
-
-## Notas sobre Seguridad e Integridad
-
-* **Filtros de Integridad**: Si el script indica que se insertaron 0 filas en alguna tabla (como el Inventario Inicial), es probable que los datos del CSV no coincidan con el catálogo maestro. Esto es un comportamiento esperado para evitar datos huérfanos.
-* **Tipos de Datos**: Se utiliza el tipo `DECIMAL(18,2)` para medidas y precios, asegurando que no se pierda información decimal durante la ingesta.
-
----
-
+> [!NOTE] 
+> Todas las carpetas de datos masivos `.csv` intermedios, entornos virtuales e historiales pesados se encuentran protegidos fuera de Control de Versiones. El repositorio solo almacena la ingeniería y el cerebro (`*.py` e `*.ipynb`).

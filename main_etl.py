@@ -1,8 +1,25 @@
+import os
+import sys
+import subprocess
+import glob
+import json
+import datetime
+
+# --- 0. AUTO-INSTALADOR DE DEPENDENCIAS ---
+def instalar_dependencias():
+    print("--- 0. COMPROBANDO DEPENDENCIAS (requirements.txt) ---")
+    if os.path.exists("requirements.txt"):
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"], check=True)
+            print("Dependencias verificadas y listas.")
+        except subprocess.CalledProcessError:
+            print("Aviso: Hubo un problema al instalar las dependencias silenciosamente.")
+            
+instalar_dependencias()
+
+# --- IMPORTACIONES DE TERCEROS ---
 import pandas as pd
 import numpy as np
-import os
-import json
-import glob
 from google.oauth2 import service_account
 from google.cloud import bigquery
 from kaggle.api.kaggle_api_extended import KaggleApi
@@ -11,6 +28,7 @@ from kaggle.api.kaggle_api_extended import KaggleApi
 PROJECT_ID = "henry-inventory-analytics"
 DATASET_ID = "Inventario_DWH"
 DATASET_SLUG = "bhanupratapbiswas/inventory-analysis-case-study"
+RUTA_INGESTA = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "DatosIngesta"))
 
 def obtener_cliente_bq():
     if os.path.exists("google_key.json"):
@@ -21,102 +39,135 @@ def obtener_cliente_bq():
         return bigquery.Client(credentials=creds, project=PROJECT_ID)
 
 def descargar_datos():
+    print("--- 1. DESCARGANDO DATOS DE KAGGLE ---")
     api = KaggleApi()
     api.authenticate()
     if not os.path.exists('data'): os.makedirs('data')
     api.dataset_download_files(DATASET_SLUG, path='data/', unzip=True)
+    print("Descarga completada.")
 
-def procesar_etl():
-    descargar_datos()
+def limpiar_datos():
+    print("--- 2. EJECUTANDO PIPELINE DE LIMPIEZA (NOTEBOOKS) ---")
+    notebooks = [
+        'scripts/limpieza_inventario_inicial.ipynb',
+        'scripts/limpieza_inventario_final.ipynb',
+        'scripts/limpieza_compras.ipynb',
+        'scripts/limpieza_detalle_compras.ipynb',
+        'scripts/limpieza_ventas.ipynb',
+        'scripts/limpieza_productos.ipynb'
+    ]
+    for nb in notebooks:
+        print(f"Ejecutando {nb}...")
+        try:
+            subprocess.run(['python', '-m', 'jupyter', 'nbconvert', '--to', 'notebook', '--execute', nb, '--inplace'], check=True)
+            print(f"[{nb}] OK.")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Fallo al ejecutar {nb}: {e}")
+            raise e
+
+def cargar_bigquery():
+    print(f"--- 3. INICIANDO INGESTA AUTOMATIZADA A BIGQUERY ({DATASET_ID}) ---")
     client = obtener_cliente_bq()
     credentials = client._credentials
     
-    # Carga de archivos crudos
-    ventas_raw = pd.read_csv(glob.glob('data/SalesFINAL*.csv')[0])
-    compras_raw = pd.read_csv(glob.glob('data/PurchasesFINAL*.csv')[0])
-    inv_ini_raw = pd.read_csv(glob.glob('data/BegInv*.csv')[0])
-    inv_fin_raw = pd.read_csv(glob.glob('data/EndInv*.csv')[0])
+    pipeline_carga = [
+        ('Dim_Calendario.csv', 'Catalogo', 'Dim_Calendario'),
+        ('Dim_Proveedor.csv', 'Catalogo', 'Dim_Proveedor'),
+        ('Dim_Tienda.csv', 'Catalogo', 'Dim_Tienda'),
+        ('Dim_Producto.csv', 'Catalogo', 'Dim_Producto'),
+        ('Fact_Ventas.csv', 'Operaciones', 'Fact_Ventas'),
+        ('Fact_Compras.csv', 'Operaciones', 'Fact_Compras'),
+        ('Fact_Detalle_Compras.csv', 'Operaciones', 'Fact_Detalle_Compras'),
+        ('Fact_Inventario_Inicial.csv', 'Operaciones', 'Fact_Inventario_Inicial'),
+        ('Fact_Inventario.csv', 'Operaciones', 'Fact_Inventario_Final')
+    ]
 
-    # --- 1. DIMENSIONES (CATALOGO) ---
-    
-    # Dim_Calendario (Extraído de Ventas según notebook)
-    fechas = pd.to_datetime(ventas_raw['SalesDate']).unique()
-    dim_calendario = pd.DataFrame({'Fecha': fechas})
-    dim_calendario['Fecha_ID'] = dim_calendario['Fecha'].dt.strftime('%Y%m%d').astype(int)
-    dim_calendario['Año'] = dim_calendario['Fecha'].dt.year
-    dim_calendario['Mes'] = dim_calendario['Fecha'].dt.month
-    dim_calendario['Trimestre'] = dim_calendario['Fecha'].dt.quarter
-    dim_calendario['Semana'] = dim_calendario['Fecha'].dt.isocalendar().week
-    dim_calendario = dim_calendario[['Fecha_ID', 'Fecha', 'Año', 'Mes', 'Trimestre', 'Semana']].drop_duplicates()
-
-    # Dim_Tienda
-    dim_tienda = inv_ini_raw[['Store', 'City']].drop_duplicates()
-    dim_tienda.columns = ['Tienda_ID', 'Ciudad']
-
-    # Dim_Proveedor
-    dim_proveedor = compras_raw[['VendorNumber', 'VendorName']].drop_duplicates()
-    dim_proveedor.columns = ['Proveedor_ID', 'Nombre_Proveedor']
-
-    # Dim_Producto
-    dim_producto = inv_ini_raw[['Brand', 'Description', 'Size', 'Price']].drop_duplicates()
-    dim_producto.columns = ['Marca_ID', 'Descripcion', 'Tamaño', 'Volumen'] # Volumen se inicializa
-    dim_producto['Volumen'] = 0.0
-    dim_producto['Clasificacion'] = 1.0
-    dim_producto['Pack'] = "Individual"
-    dim_producto = dim_producto[['Marca_ID', 'Descripcion', 'Tamaño', 'Volumen', 'Clasificacion', 'Pack']]
-
-    # --- 2. HECHOS (OPERACIONES) ---
-
-    # Fact_Ventas
-    fact_ventas = ventas_raw.copy()
-    fact_ventas['Venta_ID'] = fact_ventas.index + 1
-    fact_ventas['Fecha_ID'] = pd.to_datetime(fact_ventas['SalesDate']).dt.strftime('%Y%m%d').astype(int)
-    fact_ventas = fact_ventas[['Venta_ID', 'Brand', 'Store', 'Fecha_ID', 'SalesQuantity', 'SalesDollars', 'SalesPrice', 'ExciseTax']]
-    fact_ventas.columns = ['Venta_ID', 'Marca_ID', 'Tienda_ID', 'Fecha_ID', 'Cantidad', 'Venta_Total', 'Precio_Unitario', 'Impuesto']
-
-    # Fact_Compras
-    fact_compras = compras_raw.copy()
-    fact_compras['Detalle_Compra_ID'] = fact_compras.index + 1
-    fact_compras['Fecha_ID'] = pd.to_datetime(fact_compras['PODate']).dt.strftime('%Y%m%d').astype(int)
-    fact_compras = fact_compras[['Detalle_Compra_ID', 'PONumber', 'Brand', 'VendorNumber', 'Fecha_ID', 'Quantity', 'PurchasePrice', 'Dollars']]
-    fact_compras.columns = ['Detalle_Compra_ID', 'Compra_ID', 'Marca_ID', 'Proveedor_ID', 'Fecha_ID', 'Cantidad', 'Precio_Compra', 'Importe']
-
-    # Fact_Inventario_Inicial
-    fact_inv_ini = inv_ini_raw.copy()
-    fact_inv_ini['Inventario_ID'] = fact_inv_ini.index + 1
-    fact_inv_ini['Fecha_ID'] = 20160101 # Fecha fija de inicio según notebook
-    fact_inv_ini = fact_inv_ini[['Inventario_ID', 'Brand', 'Store', 'Fecha_ID', 'onHand']]
-    fact_inv_ini.columns = ['Inventario_ID', 'Marca_ID', 'Tienda_ID', 'Fecha_ID', 'Unidades_Disponibles']
-
-    # Fact_Inventario (Final)
-    fact_inv_fin = inv_fin_raw.copy()
-    fact_inv_fin['Inventario_ID'] = fact_inv_fin.index + 1
-    fact_inv_fin['Fecha_ID'] = 20161231 # Fecha fija de cierre según notebook
-    fact_inv_fin = fact_inv_fin[['Inventario_ID', 'Brand', 'Store', 'Fecha_ID', 'onHand']]
-    fact_inv_fin.columns = ['Inventario_ID', 'Marca_ID', 'Tienda_ID', 'Fecha_ID', 'Unidades_Disponibles']
-
-    # --- 3. LIMPIEZA Y VALIDACIÓN (Igual al script de automatización local) ---
-    tablas = {
-        'Catalogo.Dim_Calendario': dim_calendario,
-        'Catalogo.Dim_Proveedor': dim_proveedor,
-        'Catalogo.Dim_Tienda': dim_tienda,
-        'Catalogo.Dim_Producto': dim_producto,
-        'Operaciones.Fact_Ventas': fact_ventas,
-        'Operaciones.Fact_Compras': fact_compras,
-        'Operaciones.Fact_Inventario_Inicial': fact_inv_ini,
-        'Operaciones.Fact_Inventario_Final': fact_inv_fin
+    maestros = {
+        'Marca_ID': [],
+        'Tienda_ID': [],
+        'Proveedor_ID': [],
+        'Fecha_ID': [],
+        'Compra_ID': []
     }
 
-    for full_name, df in tablas.items():
-        # Limpieza según automatización: 'Unknown' -> 0 y fillna(0)
-        df = df.replace('Unknown', 0).fillna(0)
-        
-        # Subir a BigQuery (Esquema_Tabla)
-        table_id = full_name.replace('.', '_')
-        print(f"Subiendo {table_id} a BigQuery...")
-        df.to_gbq(f"{DATASET_ID}.{table_id}", project_id=PROJECT_ID, if_exists='replace', credentials=credentials)
+    for archivo, esquema, tabla in pipeline_carga:
+        ruta_archivo = os.path.join(RUTA_INGESTA, archivo)
+        if os.path.exists(ruta_archivo):
+            print(f"Procesando: {archivo} >> {esquema}_{tabla}")
+            df = pd.read_csv(ruta_archivo, low_memory=False)
 
-    print("--- PROCESO FINALIZADO ---")
+            # --- CORRECCIONES Y LLAVES ---
+            if tabla == 'Dim_Producto':
+                df['Volumen'] = pd.to_numeric(df['Volumen'], errors='coerce').fillna(0)
+                df['Clasificacion'] = pd.to_numeric(df['Clasificacion'], errors='coerce').fillna(0)
+                if 'Tamaño' in df.columns:
+                    df.rename(columns={'Tamaño': 'Tamano'}, inplace=True)
+            elif tabla == 'Dim_Calendario':
+                if 'Año' in df.columns:
+                    df.rename(columns={'Año': 'Anio'}, inplace=True)
+
+            if esquema == 'Catalogo':
+                col_pk = df.columns[0]
+                df = df.drop_duplicates(subset=[col_pk])
+
+            if tabla == 'Dim_Producto': maestros['Marca_ID'] = df['Marca_ID'].unique().tolist()
+            elif tabla == 'Dim_Tienda': maestros['Tienda_ID'] = df['Tienda_ID'].unique().tolist()
+            elif tabla == 'Dim_Proveedor': maestros['Proveedor_ID'] = df['Proveedor_ID'].unique().tolist()
+            elif tabla == 'Dim_Calendario': maestros['Fecha_ID'] = df['Fecha_ID'].unique().tolist()
+            elif tabla == 'Fact_Compras': maestros['Compra_ID'] = df['Compra_ID'].unique().tolist()
+
+            # --- INTEGRIDAD REFERENCIAL ---
+            if esquema == 'Operaciones':
+                total_antes = len(df)
+                if 'Marca_ID' in df.columns: df = df[df['Marca_ID'].isin(maestros['Marca_ID'])]
+                if 'Tienda_ID' in df.columns: df = df[df['Tienda_ID'].isin(maestros['Tienda_ID'])]
+                if 'Proveedor_ID' in df.columns: df = df[df['Proveedor_ID'].isin(maestros['Proveedor_ID'])]
+                
+                if 'Fecha_ID' in df.columns:
+                    fechas_nuevas = df[~df['Fecha_ID'].isin(maestros['Fecha_ID'])]['Fecha_ID'].unique()
+                    if len(fechas_nuevas) > 0:
+                        print(f"     => Auto-generando {len(fechas_nuevas)} fechas faltantes en BigQuery...")
+                        nuevas_filas_cal = []
+                        for fid in fechas_nuevas:
+                            try:
+                                dt = datetime.datetime.strptime(str(fid), '%Y%m%d')
+                                nuevas_filas_cal.append({'Fecha_ID': fid, 'Fecha': dt.strftime('%Y-%m-%d'), 'Anio': dt.year, 'Mes': dt.month, 'Trimestre': (dt.month-1)//3 + 1, 'Semana': dt.isocalendar()[1]})
+                                maestros['Fecha_ID'].append(fid)
+                            except: pass
+                        if nuevas_filas_cal:
+                            df_cal = pd.DataFrame(nuevas_filas_cal)
+                            df_cal['Fecha'] = pd.to_datetime(df_cal['Fecha'])
+                            df_cal.to_gbq(f"{DATASET_ID}.Catalogo_Dim_Calendario", project_id=PROJECT_ID, if_exists='append', credentials=credentials)
+                    
+                    df = df[df['Fecha_ID'].isin(maestros['Fecha_ID'])]
+                
+                if 'Compra_ID' in df.columns and tabla == 'Fact_Detalle_Compras':
+                    df = df[df['Compra_ID'].isin(maestros['Compra_ID'])]
+
+                filas_huerfanas = total_antes - len(df)
+                if filas_huerfanas > 0:
+                    print(f"     => Limpieza referencial: {filas_huerfanas} filas ignoradas.")
+
+            # --- CARGA A BIGQUERY ---
+            # El esquema en formato BigQuery es DATASET.ESQUEMA_TABLA
+            table_id = f"{esquema}_{tabla}"
+            
+            # Casteos especificos de tipos en DataFrames antes de ir a BQ
+            if 'Fecha' in df.columns:
+                df['Fecha'] = pd.to_datetime(df['Fecha'])
+
+            # Optimizamos a chunksize moderado dada la red HTTP
+            df.to_gbq(f"{DATASET_ID}.{table_id}", project_id=PROJECT_ID, if_exists='replace', credentials=credentials, chunksize=50000)
+            print(f"   Exito: Tabla {table_id} subida ({len(df)} filas).")
+            
+        else:
+            print(f"   Aviso: {archivo} no existe en la ruta.")
+
+def procesar_etl():
+    descargar_datos()
+    limpiar_datos()
+    cargar_bigquery()
+    print("--- ETL BIGQUERY FINALIZADO ---")
 
 if __name__ == "__main__":
     procesar_etl()
