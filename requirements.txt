@@ -3,3 +3,6 @@ pandas-gbq
 google-cloud-bigquery
 kaggle
 pyarrow
+jupyter
+nbconvert
+ipykernel
