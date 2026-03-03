@@ -99,7 +99,7 @@ def cargar_bigquery():
             # --- CORRECCIONES Y LLAVES ---
             if tabla == 'Dim_Producto':
                 df['Volumen'] = pd.to_numeric(df['Volumen'], errors='coerce').fillna(0)
-                df['Clasificacion'] = pd.to_numeric(df['Clasificacion'], errors='coerce').fillna(0)
+                # Clasificacion ahora viene como texto ("Vinos"/"Licores") desde el DataFrame de limpieza
                 if 'Tamaño' in df.columns:
                     df.rename(columns={'Tamaño': 'Tamano'}, inplace=True)
             elif tabla == 'Dim_Calendario':
